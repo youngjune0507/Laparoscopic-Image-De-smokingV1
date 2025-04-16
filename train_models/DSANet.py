@@ -1,4 +1,4 @@
-# source : https://github.com/c-yn/DSANet
+# Source: https://github.com/yzhq/DSANet
 
 import os
 import cv2
@@ -306,13 +306,24 @@ class DehazeDataset(Dataset):
         input_tensor = torch.from_numpy(input_img.transpose(2, 0, 1)).float()
         clean_tensor = torch.from_numpy(clean_img.transpose(2, 0, 1)).float()
         return input_tensor, clean_tensor
-    
-# Training and Evaluation with Multiscale Loss
+
+# Function to compute FFT for frequency domain loss
+def compute_fft(image):
+    # Convert image to grayscale for FFT (single channel)
+    # Alternatively, compute FFT per channel
+    # Shape: [N, C, H, W]
+    fft = torch.fft.fft2(image, dim=(-2, -1))
+    fft = torch.stack((fft.real, fft.imag), dim=-1)  # [N, C, H, W, 2]
+    return fft
+
+# Training and Evaluation with Dual Domain L1 Loss
 def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    # Initialize model
     model = DSANet().to(device)
-    criterion = nn.MSELoss()  # Use MSE loss
+    criterion = nn.L1Loss()  # Use L1 loss for both spatial and frequency domains
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
+    # Prepare dataset and data loaders
     train_dataset = DehazeDataset(data_dir, train=True)
     val_dataset = DehazeDataset(data_dir, train=False)
     train_size = int(0.8 * len(train_dataset))
@@ -323,6 +334,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if t
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=0)
 
+    # Training loop
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
@@ -331,12 +343,31 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if t
                 input_img, clean_img = input_img.to(device), clean_img.to(device)
                 optimizer.zero_grad()
                 output_imgs = model(input_img)  # Outputs: [64x64, 128x128, 256x256]
+                
+                # Prepare multi-scale GT images
                 clean_img2 = F.interpolate(clean_img, scale_factor=0.5, mode='bilinear', align_corners=False)
                 clean_img4 = F.interpolate(clean_img, scale_factor=0.25, mode='bilinear', align_corners=False)
-                l1 = criterion(output_imgs[0], clean_img4)
-                l2 = criterion(output_imgs[1], clean_img2)
-                l3 = criterion(output_imgs[2], clean_img)
-                loss = l1 + l2 + l3
+                
+                # Spatial domain L1 loss
+                spatial_loss = (criterion(output_imgs[0], clean_img4) + 
+                               criterion(output_imgs[1], clean_img2) + 
+                               criterion(output_imgs[2], clean_img))
+                
+                # Frequency domain L1 loss
+                fft_out0 = compute_fft(output_imgs[0])
+                fft_clean4 = compute_fft(clean_img4)
+                fft_out1 = compute_fft(output_imgs[1])
+                fft_clean2 = compute_fft(clean_img2)
+                fft_out2 = compute_fft(output_imgs[2])
+                fft_clean = compute_fft(clean_img)
+                
+                freq_loss = (criterion(fft_out0, fft_clean4) + 
+                            criterion(fft_out1, fft_clean2) + 
+                            criterion(fft_out2, fft_clean))
+                
+                # Combine losses: L_s + 0.1 * L_f
+                loss = spatial_loss + 0.1 * freq_loss
+                
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -345,6 +376,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if t
         avg_train_loss = train_loss / len(train_loader)
         print(f"Average Training Loss: {avg_train_loss:.4f}")
 
+    # Final evaluation
     print("Final evaluation on validation set with original GT resolution...")
     model.eval()
     psnr_values = []
@@ -360,12 +392,13 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if t
             psnr_values.append(psnr(clean_np, output_np, data_range=1.0))
             ssim_values.append(ssim(clean_np, output_np, multichannel=True, data_range=1.0, win_size=11, channel_axis=2))
 
+    # Print results
     avg_psnr = np.mean(psnr_values)
     avg_ssim = np.mean(ssim_values)
     print(f"Final Average PSNR: {avg_psnr:.4f}")
     print(f"Final Average SSIM: {avg_ssim:.4f}")
 
-    # Plot PSNR and SSIM
+    # Visualize results
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(range(1, len(psnr_values) + 1), psnr_values, marker='o', label='PSNR')
@@ -388,10 +421,11 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=2, device='cuda' if t
     plt.tight_layout()
     plt.show()
 
+    # Save model
     torch.save(model.state_dict(), 'dsanet_trained.pth')
     print("Model saved as 'dsanet_trained.pth'")
 
-# Run the training
+# Execution
 if __name__ == "__main__":
     data_dir = 'path to your dataset'
     train_and_evaluate(data_dir, num_epochs=10, batch_size=2)

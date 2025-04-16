@@ -1,16 +1,18 @@
+# Source: https://github.com/proteus1991/GridDehazeNet
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import os
 import cv2
-import torch
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 from torchvision.models import vgg16
+from torch.utils.data import DataLoader, random_split
 
 # Residual Dense Block
 class MakeDense(nn.Module):
@@ -40,7 +42,7 @@ class RDB(nn.Module):
         out = out + x
         return out
 
-# Downsampling
+# Downsampling Module
 class DownSample(nn.Module):
     def __init__(self, in_channels, kernel_size=3, stride=2):
         super(DownSample, self).__init__()
@@ -52,7 +54,7 @@ class DownSample(nn.Module):
         out = F.relu(self.conv2(out))
         return out
 
-# Upsampling
+# Upsampling Module
 class UpSample(nn.Module):
     def __init__(self, in_channels, kernel_size=3, stride=2):
         super(UpSample, self).__init__()
@@ -64,6 +66,7 @@ class UpSample(nn.Module):
         out = F.relu(self.conv(out))
         return out
 
+# GridDehazeNet Model
 class GridDehazeNet(nn.Module):
     def __init__(self, in_channels=3, depth_rate=16, kernel_size=3, stride=2, height=3, width=6, num_dense_layer=4, growth_rate=16, attention=True):
         super(GridDehazeNet, self).__init__()
@@ -135,9 +138,8 @@ class GridDehazeNet(nn.Module):
         out = self.rdb_out(x_index[i][j])
         out = F.relu(self.conv_out(out))
         return out
-    
 
-
+# Dehazing Dataset
 class DehazeDataset(Dataset):
     def __init__(self, data_dir, train=True):
         self.data_dir = data_dir
@@ -168,7 +170,6 @@ class DehazeDataset(Dataset):
         hazy_img = torch.from_numpy(hazy_img.transpose(2, 0, 1)).float()
         gt_img = torch.from_numpy(gt_img.transpose(2, 0, 1)).float()
         return hazy_img, gt_img
-    
 
 # Perceptual Loss Network (VGG16)
 class LossNetwork(nn.Module):
@@ -197,27 +198,27 @@ class LossNetwork(nn.Module):
             loss.append(F.mse_loss(dehaze_feature, gt_feature))
         return sum(loss) / len(loss)
 
-# Smooth L1 Loss 정의
+# Smooth L1 Loss Function
 def smooth_l1_loss(pred, target):
     return nn.SmoothL1Loss()(pred, target)
 
-# 학습 및 검증 함수
+# Training and Evaluation Function
 def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if torch.cuda.is_available() else 'cpu'):
-    # 모델 초기화
+    # Initialize the model
     model = GridDehazeNet().to(device)
 
-    # VGG16 기반 Perceptual Loss
+    # Load VGG16 for perceptual loss
     vgg = vgg16(pretrained=True).features[:16].eval().to(device)
     for param in vgg.parameters():
         param.requires_grad = False
     loss_network = LossNetwork(vgg).to(device)
 
-    # 손실 함수
+    # Define loss functions
     smooth_l1_criterion = nn.SmoothL1Loss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    # 데이터셋 및 로더
+    # Prepare datasets and data loaders
     train_dataset = DehazeDataset(data_dir, train=True)
     val_dataset = DehazeDataset(data_dir, train=False)
     train_size = int(0.8 * len(train_dataset))
@@ -228,7 +229,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=0)
 
-    # 학습 루프
+    # Training loop
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
@@ -238,7 +239,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
                 optimizer.zero_grad()
                 dehaze_img = model(hazy_img)
 
-                # Perceptual Loss와 Smooth L1 Loss 결합 (가중치 0.5:0.5)
+                # Combine perceptual loss and smooth L1 loss (weight 0.5:0.5)
                 perceptual_loss = loss_network(dehaze_img, gt_img)
                 smooth_l1 = smooth_l1_criterion(dehaze_img, gt_img)
                 loss = 0.04 * perceptual_loss + smooth_l1
@@ -251,7 +252,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
         avg_train_loss = train_loss / len(train_loader)
         print(f"Average Training Loss: {avg_train_loss:.4f}")
 
-    # 검증
+    # Validation phase
     print("Final evaluation on validation set with original GT resolution...")
     model.eval()
     psnr_values = []
@@ -261,7 +262,7 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
             hazy_img, gt_img = hazy_img.to(device), gt_img.to(device)
             dehaze_img = model(hazy_img)
 
-            # 원래 GT 해상도로 맞춤
+            # Resize output to match GT resolution
             dehaze_img = F.interpolate(dehaze_img, size=(gt_img.shape[2], gt_img.shape[3]), mode='bilinear', align_corners=False)
 
             dehaze_np = dehaze_img.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -269,13 +270,13 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
             psnr_values.append(psnr(gt_np, dehaze_np, data_range=1.0))
             ssim_values.append(ssim(gt_np, dehaze_np, multichannel=True, data_range=1.0, win_size=11, channel_axis=2))
 
-    # 결과 출력
+    # Print results
     avg_psnr = np.mean(psnr_values)
     avg_ssim = np.mean(ssim_values)
     print(f"Final Average PSNR: {avg_psnr:.4f}")
     print(f"Final Average SSIM: {avg_ssim:.4f}")
 
-    # 시각화
+    # Visualize results
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(range(1, len(psnr_values) + 1), psnr_values, marker='o', label='PSNR')
@@ -298,12 +299,10 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=4, device='cuda' if t
     plt.tight_layout()
     plt.show()
 
-    # 모델 저장
+    # Save the model
     torch.save(model.state_dict(), 'griddehazenet_trained.pth')
     print("Model saved as 'griddehazenet_trained.pth'")
 
-
-
 if __name__ == "__main__":
-    data_dir = 'path_to_your_dataset'
+    data_dir = 'path to your dataset'
     train_and_evaluate(data_dir, num_epochs=20, batch_size=4)

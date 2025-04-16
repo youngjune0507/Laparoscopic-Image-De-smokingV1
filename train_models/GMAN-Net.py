@@ -214,5 +214,5 @@ def train_and_evaluate(data_dir, num_epochs=10, batch_size=8, device='cuda' if t
 
 # Execution
 if __name__ == "__main__":
-    data_dir = '/kaggle/input/desmoke-dataset-miccai-2024/DesmokeData-main/images/dataset'
+    data_dir = 'path to your dataset'
     train_and_evaluate(data_dir, num_epochs=10, batch_size=8)

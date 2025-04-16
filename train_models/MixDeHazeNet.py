@@ -1,3 +1,4 @@
+# Source: https://github.com/AmeryXiong/MixDehazeNet/tree/main
 
 import os
 import cv2
@@ -12,7 +13,7 @@ from torchvision import transforms, models
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 
-# MixDehazeNet 
+# MixStructureBlock for feature processing
 class MixStructureBlock(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -71,6 +72,7 @@ class MixStructureBlock(nn.Module):
         x = identity + x
         return x
 
+# Basic Layer for stacking MixStructureBlocks
 class BasicLayer(nn.Module):
     def __init__(self, dim, depth):
         super().__init__()
@@ -83,6 +85,7 @@ class BasicLayer(nn.Module):
             x = blk(x)
         return x
 
+# Patch Embedding Layer
 class PatchEmbed(nn.Module):
     def __init__(self, patch_size=4, in_chans=3, embed_dim=96, kernel_size=None):
         super().__init__()
@@ -97,6 +100,7 @@ class PatchEmbed(nn.Module):
         x = self.proj(x)
         return x
 
+# Patch Unembedding Layer
 class PatchUnEmbed(nn.Module):
     def __init__(self, patch_size=4, out_chans=3, embed_dim=96, kernel_size=None):
         super().__init__()
@@ -114,6 +118,7 @@ class PatchUnEmbed(nn.Module):
         x = self.proj(x)
         return x
 
+# Selective Kernel Fusion Module
 class SKFusion(nn.Module):
     def __init__(self, dim, height=2, reduction=8):
         super(SKFusion, self).__init__()
@@ -137,6 +142,7 @@ class SKFusion(nn.Module):
         out = torch.sum(in_feats * attn, dim=1)
         return out
 
+# MixDehazeNet Model
 class MixDehazeNet(nn.Module):
     def __init__(self, in_chans=3, out_chans=4, embed_dims=[24, 48, 96, 48, 24], depths=[1, 1, 2, 1, 1]):
         super(MixDehazeNet, self).__init__()
@@ -193,6 +199,7 @@ class MixDehazeNet(nn.Module):
         x = x[:, :, :H, :W]
         return x
 
+# Model Variants
 def MixDehazeNet_t():
     return MixDehazeNet(
         embed_dims=[24, 48, 96, 48, 24],
@@ -213,7 +220,7 @@ def MixDehazeNet_l():
         embed_dims=[24, 48, 96, 48, 24],
         depths=[8, 8, 16, 8, 8])
 
-# Defining Contrast Loss
+# ResNet152 for Contrast Loss
 class Resnet152(nn.Module):
     def __init__(self, requires_grad=False):
         super(Resnet152, self).__init__()
@@ -233,6 +240,7 @@ class Resnet152(nn.Module):
         h_relu4 = self.slice4(h_relu3)
         return [h_relu1, h_relu2, h_relu3, h_relu4]
 
+# Contrast Loss with ResNet152
 class ContrastLoss_res(nn.Module):
     def __init__(self, ablation=False):
         super(ContrastLoss_res, self).__init__()
@@ -255,7 +263,7 @@ class ContrastLoss_res(nn.Module):
             loss += self.weights[i] * contrastive
         return loss
 
-
+# Dehazing Dataset
 class DehazeDataset(Dataset):
     def __init__(self, data_dir, train=True):
         self.data_dir = data_dir
@@ -281,15 +289,15 @@ class DehazeDataset(Dataset):
         gt_img = torch.from_numpy(gt_img.transpose(2, 0, 1)).float()
         return hazy_img, gt_img
 
-
+# Training and Evaluation Function
 def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if torch.cuda.is_available() else 'cpu'):
-
-    #model = MixDehazeNet_t().to(device)   choose the size of the model you want#
+    # Initialize model (uncomment the desired model size)
+    model = MixDehazeNet_t().to(device)  # Choose the size of the model you want
     contrast_loss = ContrastLoss_res(ablation=False).to(device)
     l1_loss = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-
+    # Prepare datasets and data loaders
     train_dataset = DehazeDataset(data_dir, train=True)
     val_dataset = DehazeDataset(data_dir, train=False)
     train_size = int(0.8 * len(train_dataset))
@@ -300,7 +308,7 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=0)
 
-   
+    # Training loop
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
@@ -310,10 +318,10 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
                 optimizer.zero_grad()
                 dehaze_img = model(hazy_img)
 
-                # Contrast Loss 계산 (hazy_img을 negative로 사용)
+                # Calculate contrast loss (using hazy_img as negative)
                 contrastive_loss = contrast_loss(dehaze_img, gt_img, hazy_img)
                 l1 = l1_loss(dehaze_img, gt_img)
-                loss = l1 + 0.1 * contrastive_loss  # L1과 Contrast Loss 결합
+                loss = l1 + 0.1 * contrastive_loss  # Combine L1 and contrast loss
 
                 loss.backward()
                 optimizer.step()
@@ -323,7 +331,7 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
         avg_train_loss = train_loss / len(train_loader)
         print(f"Average Training Loss: {avg_train_loss:.4f}")
 
-    # Final Evalution
+    # Final evaluation
     print("Final evaluation on validation set with original GT resolution...")
     model.eval()
     psnr_values = []
@@ -338,12 +346,13 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
             psnr_values.append(psnr(gt_np, dehaze_np, data_range=1.0))
             ssim_values.append(ssim(gt_np, dehaze_np, multichannel=True, data_range=1.0, win_size=11, channel_axis=2))
 
+    # Print results
     avg_psnr = np.mean(psnr_values)
     avg_ssim = np.mean(ssim_values)
     print(f"Final Average PSNR: {avg_psnr:.4f}")
     print(f"Final Average SSIM: {avg_ssim:.4f}")
 
-    
+    # Visualize results
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(range(1, len(psnr_values) + 1), psnr_values, marker='o', label='PSNR')
@@ -366,13 +375,11 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
     plt.tight_layout()
     plt.show()
 
-    # model save
+    # Save the model
     torch.save(model.state_dict(), 'mixdehazenet_t_trained.pth')
     print("Model saved as 'mixdehazenet_t_trained.pth'")
 
-
-# 실행
+# Execution
 if __name__ == "__main__":
-    data_dir = '/kaggle/input/desmoke-dataset-miccai-2024/DesmokeData-main/images/dataset'
+    data_dir = 'path to your dataset'
     train_and_evaluate(data_dir, num_epochs=20, batch_size=4)
-

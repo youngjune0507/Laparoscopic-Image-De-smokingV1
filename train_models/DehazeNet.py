@@ -1,4 +1,4 @@
-source : https://github.com/thuBingo/DehazeNet_Pytorch
+#source : https://github.com/thuBingo/DehazeNet_Pytorch
 
 import os
 import cv2

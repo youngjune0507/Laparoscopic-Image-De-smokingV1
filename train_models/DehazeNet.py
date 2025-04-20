@@ -232,4 +232,4 @@ def train_and_evaluate(data_dir, num_epochs=20, batch_size=4, device='cuda' if t
 # ------------------- Main Execution -------------------
 if __name__ == "__main__":
     data_dir = 'path to your dataset'
-    train_and_evaluate(data_dir, num_epochs=10, batch_size=4)
+    train_and_evaluate(data_dir, num_epochs=100, batch_size=128)
